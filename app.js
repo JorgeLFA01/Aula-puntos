@@ -3,6 +3,7 @@ const $ = id => document.getElementById(id);
 let session = sessionStorage.getItem('aula_session') || '', students = [], scanner = null;
 let selected = null, operation = null, createPending = null, teacherPending = null, isBusy = false;
 let account=null, teachers=[], selectedTeacherId='';
+let groups=[],categories=[],assignments=[],awardCategory='';
 const code = new URLSearchParams(location.hash.slice(1)).get('alumno');
 const apiURL = window.AULA_CONFIG?.API_URL || '';
 const uid = () => crypto.randomUUID();
@@ -24,68 +25,49 @@ async function api(action, data={}) {
   }
 }
 async function busy(fn){if(isBusy)return;isBusy=true;document.querySelectorAll('button').forEach(b=>b.disabled=true);try{await fn();}catch(e){status(e.message,true);}finally{isBusy=false;document.querySelectorAll('button').forEach(b=>b.disabled=false);}}
-const groupKey = s => s.grade && s.group ? s.grade+'|'+s.group : 'unassigned';
-const groupLabel = s => s.grade && s.group ? s.grade+'° '+s.group : 'Sin asignar';
+const groupKey = s => s.groupId || 'unassigned';
+const groupLabel = s => s.grade && s.group ? s.grade+'.º '+s.group : 'Sin asignar';
 let activeGroup='';
 function groupRanks(list){
   const ordered=[...list].sort((a,b)=>b.points-a.points || a.name.localeCompare(b.name,'es') || a.id.localeCompare(b.id));
   let last=null, rank=0;
   return ordered.map((s,i)=>{if(s.points!==last)rank=i+1;last=s.points;return {...s,rank};});
 }
+function fillSelect(id,options,current){const el=$(id);el.replaceChildren();options.forEach(o=>{const n=document.createElement('option');n.value=o.id;n.textContent=o.name;el.append(n);});if(options.some(o=>o.id===current))el.value=current;}
+function categoryOptions(groupId){return categories.filter(c=>account?.role==='coordinator'||assignments.some(a=>a.teacherId===account.id&&a.groupId===groupId&&a.categoryId===c.id));}
 function render(){
-  renderStaff();
-  const visibleStudents=students.filter(s=>(s.teacherId||'')===selectedTeacherId);
-  const roster=$('roster'),tabs=$('groupTabs'),podium=$('podium');roster.replaceChildren();tabs.replaceChildren();podium.replaceChildren();
-  const groups=[...new Map(visibleStudents.map(s=>[groupKey(s),s])).entries()].sort((a,b)=>{if(a[0]==='unassigned')return 1;if(b[0]==='unassigned')return -1;return Number(a[1].grade)-Number(b[1].grade)||a[1].group.localeCompare(b[1].group,'es',{numeric:true});});
-  if(!groups.some(([key])=>key===activeGroup))activeGroup=groups[0]?.[0]||'';
-  groups.forEach(([key,s],i)=>{
-    const tab=document.createElement('button');tab.type='button';tab.id='group-tab-'+i;tab.setAttribute('role','tab');tab.setAttribute('aria-controls','groupPanel');tab.setAttribute('aria-selected',String(activeGroup===key));tab.tabIndex=activeGroup===key?0:-1;tab.textContent=groupLabel(s);tab.onclick=()=>{activeGroup=key;render();$('groupTabs').querySelector('[aria-selected=true]')?.focus();};
-    tab.onkeydown=e=>{const offset=e.key==='ArrowRight'?1:e.key==='ArrowLeft'?-1:0;let target=i;if(offset)target=(i+offset+groups.length)%groups.length;else if(e.key==='Home')target=0;else if(e.key==='End')target=groups.length-1;else return;e.preventDefault();activeGroup=groups[target][0];render();$('groupTabs').querySelector('[aria-selected=true]')?.focus();};
-    tabs.append(tab);if(activeGroup===key)$('groupPanel').setAttribute('aria-labelledby',tab.id);
-  });
-  const peers=visibleStudents.filter(s=>groupKey(s)===activeGroup), ranked=groupRanks(peers);
-  $('rankingTitle').textContent=peers.length?'Ranking · '+groupLabel(peers[0]):'Ranking del grupo';
-  $('groupCount').textContent=peers.length+' alumnos';
-  $('rankingHint').textContent=activeGroup==='unassigned'?'Completa Grado y Grupo en las columnas E y F de tu hoja y pulsa Actualizar.':peers.length?'Los empates comparten posición. El top 3 destaca a quienes tienen puntos en los puestos 1, 2 y 3.':'';
-  if(!visibleStudents.length){roster.textContent='Este maestro aún no tiene alumnos. Registra el primero con grado y grupo.';$('groupPanel').removeAttribute('aria-labelledby');return;}
-  if(activeGroup!=='unassigned'){
-    const medals=['🥇','🥈','🥉'],classes=['gold','silver','bronze'];
-    [1,2,3].forEach((position,i)=>{const winners=ranked.filter(s=>s.rank===position && s.points>0),card=document.createElement('div');card.className='podium-card '+(winners.length?classes[i]:'');
-      const place=document.createElement('span');place.className='place';place.textContent=medals[i]+' '+position+'.º';
-      const names=document.createElement('div');if(winners.length)winners.forEach(w=>{const n=document.createElement('strong');n.textContent=w.name;names.append(n);});else names.textContent=ranked.some(s=>s.rank<position&&s.points>0)&&ranked.filter(s=>s.points>0).length>=position?'Puesto compartido arriba':'Por alcanzar';
-      const points=document.createElement('p');points.textContent=winners.length?winners[0].points+' puntos':'—';card.append(place,names,points);podium.append(card);
-    });
-  }
-  ranked.forEach(s=>{
-    const row=document.createElement('div');row.className='row';const highlight=activeGroup!=='unassigned'&&s.rank<=3&&s.points>0;if(highlight)row.className+=' top-rank '+['gold','silver','bronze'][s.rank-1];
-    const position=document.createElement('span');position.className='rank-position';position.textContent=activeGroup==='unassigned'?'—':'#'+s.rank;
-    const name=document.createElement('strong');name.className='roster-name';name.textContent=s.name;
-    const points=document.createElement('span');points.className='badge';points.textContent=s.points+' puntos';
-    const qr=document.createElement('button');qr.className='secondary';qr.textContent='Ver QR';qr.onclick=()=>busy(()=>openCard(s));
-    const plus=document.createElement('button');plus.textContent='+1';plus.setAttribute('aria-label','Sumar un punto a '+s.name);plus.onclick=()=>prepareAward(s);
-    row.append(position,name,points,qr,plus);roster.append(row);
-  });
+ const coord=account?.role==='coordinator';$('roleLabel').textContent=coord?'COORDINACIÓN':'MIS GRUPOS';$('accountName').textContent=account?account.name+' · '+account.username:'';$('coordinatorPanel').hidden=!coord;$('adminCatalogs').hidden=!coord;
+ const list=$('teacherList');list.replaceChildren();
+ if(coord){[{id:'',name:'Todos los grupos'},...teachers].forEach(t=>{const btn=document.createElement('button');btn.className='teacher-choice';btn.textContent=t.name;btn.setAttribute('aria-pressed',String(selectedTeacherId===t.id));btn.onclick=()=>{selectedTeacherId=t.id;activeGroup='';render();};list.append(btn);});}
+ let visibleGroups=groups.filter(g=>!coord||!selectedTeacherId||assignments.some(a=>a.teacherId===selectedTeacherId&&a.groupId===g.id));
+ visibleGroups.sort((a,b)=>Number(a.grade)-Number(b.grade)||a.group.localeCompare(b.group));
+ if(!visibleGroups.some(g=>g.id===activeGroup))activeGroup=visibleGroups[0]?.id||'';
+ $('groupsOwner').textContent='Grados y grupos';const tabs=$('groupTabs');tabs.replaceChildren();
+ visibleGroups.forEach(g=>{const btn=document.createElement('button');btn.textContent=groupLabel(g);btn.setAttribute('role','tab');btn.setAttribute('aria-selected',String(g.id===activeGroup));btn.onclick=()=>{activeGroup=g.id;render();};tabs.append(btn);});
+ fillSelect('pointCategory',categoryOptions(activeGroup),$('pointCategory').value);
+ fillSelect('studentGroup',groups.map(g=>({id:g.id,name:groupLabel(g)})),$('studentGroup').value||activeGroup);
+ $('studentOwner').textContent='El alumno pertenecerá al grupo seleccionado y tendrá un único QR.';
+ const cat=$('pointCategory').value,catName=categories.find(c=>c.id===cat)?.name||'Sin categoría autorizada';
+ const peers=students.filter(s=>s.groupId===activeGroup&&activeGroup).map(s=>({...s,points:s.categoryPoints?.[cat]||0})),ranked=groupRanks(peers);
+ $('rankingTitle').textContent='Ranking · '+catName;$('groupCount').textContent=peers.length+' alumnos';$('rankingHint').textContent='Puntos de la categoría seleccionada. Los empates comparten posición.';
+ const podium=$('podium');podium.replaceChildren();[1,2,3].forEach((rank,i)=>{const card=document.createElement('div');card.className='podium-card '+['gold','silver','bronze'][i];const winners=ranked.filter(s=>s.rank===rank&&s.points>0);card.textContent=['🥇','🥈','🥉'][i]+' '+(winners.length?winners.map(s=>s.name).join(', ')+' · '+winners[0].points+' puntos':'Por alcanzar');podium.append(card);});
+ const roster=$('roster');roster.replaceChildren();if(!ranked.length)roster.textContent=visibleGroups.length?'Este grupo aún no tiene alumnos.':'Coordinación debe crear grupos y asignar permisos para comenzar.';
+ ranked.forEach(s=>{const row=document.createElement('div');row.className='row'+(s.rank<=3&&s.points>0?' top-rank '+['gold','silver','bronze'][s.rank-1]:'');const pos=document.createElement('span');pos.textContent='#'+s.rank;const name=document.createElement('strong');name.textContent=s.name;const points=document.createElement('span');points.className='badge';points.textContent=s.points+' puntos';const qr=document.createElement('button');qr.className='secondary';qr.textContent='Ver QR';qr.onclick=()=>busy(()=>openCard(s));const plus=document.createElement('button');plus.textContent='+1';plus.onclick=()=>prepareAward(s);row.append(pos,name,points,qr,plus);roster.append(row);});
+ if(coord)renderAdmin();
 }
-function renderStaff(){
-  const coordinator=account?.role==='coordinator';$('roleLabel').textContent=coordinator?'COORDINACIÓN':'MIS GRUPOS';$('accountName').textContent=account?account.name+' · '+account.username:'';$('coordinatorPanel').hidden=!coordinator;
-  if(!coordinator)selectedTeacherId=account?.id||'';
-  else if(!teachers.some(t=>t.id===selectedTeacherId)&&!(selectedTeacherId===''&&students.some(s=>!s.teacherId)))selectedTeacherId=teachers[0]?.id||'';
-  const options=[...teachers];if(coordinator&&students.some(s=>!s.teacherId))options.push({id:'',name:'Sin maestro asignado',username:''});
-  const list=$('teacherList');list.replaceChildren();
-  if(coordinator){
-    if(!options.length)list.textContent='Agrega el primer maestro para comenzar.';
-    options.forEach(t=>{const pupils=students.filter(s=>(s.teacherId||'')===t.id),groups=new Set(pupils.map(groupKey));const button=document.createElement('button');button.className='teacher-choice';button.type='button';button.setAttribute('aria-pressed',String(t.id===selectedTeacherId));const name=document.createElement('strong');name.textContent=t.name;const count=document.createElement('span');count.textContent=groups.size+' grupos · '+pupils.length+' alumnos';button.append(name,count);button.onclick=()=>{selectedTeacherId=t.id;activeGroup='';render();};list.append(button);});
-  }
-  const owner=options.find(t=>t.id===selectedTeacherId);
-  $('groupsOwner').textContent=owner?'Grupos de '+owner.name:'Grupos';$('studentOwner').textContent=selectedTeacherId&&owner?'Alumno para: '+owner.name:'Agrega o selecciona un maestro antes de registrar alumnos.';
+function renderAdmin(){
+ fillSelect('assignmentTeacher',teachers,$('assignmentTeacher').value);const options=groups.map(g=>({id:g.id,name:groupLabel(g)}));['assignmentGroup','moveGroup'].forEach(id=>fillSelect(id,options,$(id).value));fillSelect('assignmentCategory',categories,$('assignmentCategory').value);fillSelect('movePupil',students.map(s=>({id:s.id,name:s.name+' · '+groupLabel(s)})),$('movePupil').value);
+ const list=$('assignmentList');list.replaceChildren();assignments.forEach(a=>{const row=document.createElement('p');const t=teachers.find(t=>t.id===a.teacherId),g=groups.find(g=>g.id===a.groupId),c=categories.find(c=>c.id===a.categoryId);row.textContent=(t?.name||'Maestro inactivo')+' · '+(g?groupLabel(g):'Grupo')+' · '+(c?.name||'Categoría')+' ';const btn=document.createElement('button');btn.className='secondary';btn.textContent='Quitar permiso';btn.onclick=()=>{if(confirm('¿Quitar este permiso al maestro?'))busy(async()=>{await api('revoke',{id:a.id,operation:uid()});await refresh();status('Permiso retirado.');});};row.append(btn);list.append(row);});
 }
-async function refresh(){const d=await api('list');if(!d.user||!Array.isArray(d.students)||!Array.isArray(d.teachers))throw new Error('Actualiza Code.gs e implementa una nueva versión para usar las cuentas.');account=d.user;teachers=d.teachers;students=d.students;show('teacher');render();}
+async function refresh(){const d=await api('list');if(d.version!==4)throw new Error('Publica la nueva versión de Code.gs y ejecuta actualizarEstructura para usar grupos y categorías.');account=d.user;teachers=d.teachers;students=d.students;groups=d.groups;categories=d.categories;assignments=d.assignments;show('teacher');render();}
 async function openCard(s){$('cardName').textContent=s.name;$('cardClass').textContent=groupLabel(s);$('studentLink').value=linkFor(s.code);await QRCode.toCanvas($('cardQR'),linkFor(s.code),{width:280,margin:2});$('cardDialog').showModal();}
-function prepareAward(s){selected=s;operation=uid();$('awardName').textContent='Un punto para '+s.name+' · '+groupLabel(s);$('awardDialog').showModal();}
+function prepareAward(s){
+ const cat=$('pointCategory').value;if(!cat||s.groupId!==activeGroup){status('Selecciona el grupo del alumno y una categoría autorizada.',true);return false;}
+ selected=s;operation=uid();awardCategory=cat;$('awardName').textContent='Un punto para '+s.name+' · '+groupLabel(s)+' · '+categories.find(c=>c.id===cat).name;$('awardDialog').showModal();return true;
+}
 async function award(){
-  const result=await api('award',{id:selected.id,operation});
-  const item=students.find(s=>s.id===result.id);if(item){item.points=result.points;selectedTeacherId=item.teacherId||'';activeGroup=groupKey(item);}
-  render();$('awardDialog').close();status('✓ Un punto para '+result.name+'. Total: '+result.points+'.');selected=null;operation=null;
+ const result=await api('award',{id:selected.id,operation,categoryId:awardCategory});
+ $('awardDialog').close();selected=null;operation=null;await refresh();status('✓ Un punto para '+result.name+'. Total general: '+result.points+'.');
 }
 function resolveStudent(raw){let token=raw.trim();try{token=new URLSearchParams(new URL(token).hash.slice(1)).get('alumno')||token;}catch{}return students.find(s=>s.code===token);}
 async function stopCamera(){const old=scanner;scanner=null;if(old){try{await old.stop();old.clear();}catch{}}$('stopScan').hidden=true;$('startScan').hidden=false;}
@@ -96,13 +78,19 @@ async function startCamera(){
   try {await scanner.start({facingMode:'environment'},{fps:10,qrbox:{width:220,height:220}},async raw=>{
     if(captured)return;captured=true;await stopCamera();
     const s=resolveStudent(raw);if(!s){status('El QR no pertenece a un alumno al que tengas acceso.',true);return;}
-    selected=s;operation=uid();
-    await busy(async()=>{try{await award();}catch(e){$('awardName').textContent='Confirmar el punto de '+s.name+' · '+groupLabel(s);$('awardDialog').showModal();throw e;}});
+    if(!prepareAward(s))return;
+    await busy(async()=>{try{await award();}catch(e){if(selected&&!$('awardDialog').open)$('awardDialog').showModal();throw e;}});
   },()=>{});}catch{await stopCamera();throw new Error('No se pudo abrir la cámara. Permite su uso en el navegador y abre la página con HTTPS. También puedes pegar el enlace.');}
 }
-async function refreshStudent(){const s=await api('student',{code});$('studentName').textContent='¡Hola, '+s.name+'!';$('points').textContent=s.points;$('studentClass').textContent=groupLabel(s);$('rank').textContent=s.rank==null?'Tu grupo aún no está asignado':'Tu posición en el grupo: #'+s.rank+' de '+s.total;await QRCode.toCanvas($('myQR'),linkFor(code),{width:280,margin:2});show('student');status('');}
+async function refreshStudent(){const s=await api('student',{code});$('studentName').textContent='¡Hola, '+s.name+'!';$('points').textContent=s.points;$('studentClass').textContent=groupLabel(s);$('studentCategories').replaceChildren();(s.categories||[]).forEach(c=>{const p=document.createElement('p');p.textContent=c.name+': '+c.points+' puntos · '+(c.rank?'puesto #'+c.rank:'Sin grupo');$('studentCategories').append(p);});$('rank').textContent=s.rank==null?'Tu grupo aún no está asignado':'Tu posición en el grupo: #'+s.rank+' de '+s.total;await QRCode.toCanvas($('myQR'),linkFor(code),{width:280,margin:2});show('student');status('');}
 $('loginForm').onsubmit=e=>{e.preventDefault();busy(async()=>{const d=await api('login',{username:$('username').value.trim().toLowerCase(),password:$('password').value});session=d.session;sessionStorage.setItem('aula_session',session);$('password').value='';await refresh();status('');});};
-$('createForm').onsubmit=e=>{e.preventDefault();busy(async()=>{const name=$('name').value.trim(),grade=$('grade').value,group=$('group').value.trim().toUpperCase(),teacherId=selectedTeacherId;if(!teacherId)throw new Error('Selecciona un maestro antes de registrar un alumno.');if(!createPending || createPending.name!==name || createPending.grade!==grade || createPending.group!==group || createPending.teacherId!==teacherId)createPending={name,grade,group,teacherId,operation:uid()};const s=await api('create',createPending);if(!students.some(x=>x.id===s.id))students.push(s);activeGroup=groupKey(s);createPending=null;$('name').value='';render();await openCard(s);status('Alumno registrado. Comparte su enlace personal.');});};
+$('createForm').onsubmit=e=>{e.preventDefault();busy(async()=>{const name=$('name').value.trim(),groupId=$('studentGroup').value;if(!groupId)throw new Error('Selecciona un grupo autorizado.');if(!createPending||createPending.name!==name||createPending.groupId!==groupId)createPending={name,groupId,operation:uid()};const s=await api('create',createPending);activeGroup=groupId;createPending=null;$('name').value='';await refresh();await openCard(s);status('Alumno registrado.');});};
+$('pointCategory').onchange=()=>render();
+function adminForm(id,action,data){let pending=null;$(id).onsubmit=e=>{e.preventDefault();busy(async()=>{const values=data(),key=JSON.stringify(values);if(!pending||pending.key!==key)pending={key,operation:uid()};await api(action,{...values,operation:pending.operation});pending=null;await refresh();status('Cambios guardados.');});};}
+adminForm('groupForm','createGroup',()=>({grade:$('newGrade').value,group:$('newGroup').value}));
+adminForm('categoryForm','createCategory',()=>({name:$('categoryName').value}));
+adminForm('assignmentForm','assign',()=>({teacherId:$('assignmentTeacher').value,groupId:$('assignmentGroup').value,categoryId:$('assignmentCategory').value}));
+adminForm('moveForm','moveStudent',()=>({id:$('movePupil').value,groupId:$('moveGroup').value}));
 $('refresh').onclick=()=>busy(async()=>{await refresh();status('Lista actualizada.');});
 $('logout').onclick=()=>busy(async()=>{await stopCamera();try{await api('logout');}finally{session='';sessionStorage.removeItem('aula_session');students=[];teachers=[];account=null;selectedTeacherId='';$('roster').replaceChildren();$('teacherList').replaceChildren();$('podium').replaceChildren();show('login');}});
 $('startScan').onclick=()=>busy(startCamera);$('stopScan').onclick=stopCamera;
