@@ -19,7 +19,7 @@ async function api(action, data={}) {
     if(!body.ok)throw new Error(body.error || 'No se pudo completar la acción.');
     return body.data;
   } catch(e) {
-    if(e.message?.includes('Sesión vencida')) {session='';sessionStorage.removeItem('aula_session');students=[];teachers=[];account=null;stopCamera();$('roster').replaceChildren();$('teacherList').replaceChildren();$('teacherDialog').close();$('awardDialog').close();$('cardDialog').close();show('login');}
+    if(e.message?.includes('Sesión vencida')) {session='';sessionStorage.removeItem('aula_session');students=[];teachers=[];account=null;stopCamera();$('roster').replaceChildren();$('teacherList').replaceChildren();$('resetDialog').close();$('teacherDialog').close();$('awardDialog').close();$('cardDialog').close();show('login');}
     if(e instanceof TypeError || e.name==='TimeoutError' || e instanceof SyntaxError)throw new Error('No se pudo confirmar la respuesta. Revisa tu conexión y que Apps Script esté implementado para «Cualquier persona». Puedes reintentar: la misma operación no sumará dos puntos.');
     throw e;
   }
@@ -59,7 +59,7 @@ function renderAdmin(){
  fillSelect('assignmentTeacher',teachers,$('assignmentTeacher').value);const options=groups.map(g=>({id:g.id,name:groupLabel(g)}));['assignmentGroup','moveGroup'].forEach(id=>fillSelect(id,options,$(id).value));fillSelect('assignmentCategory',categories,$('assignmentCategory').value);fillSelect('movePupil',students.map(s=>({id:s.id,name:s.name+' · '+groupLabel(s)})),$('movePupil').value);
  const list=$('assignmentList');list.replaceChildren();assignments.forEach(a=>{const row=document.createElement('p');const t=teachers.find(t=>t.id===a.teacherId),g=groups.find(g=>g.id===a.groupId),c=categories.find(c=>c.id===a.categoryId);row.textContent=(t?.name||'Maestro inactivo')+' · '+(g?groupLabel(g):'Grupo')+' · '+(c?.name||'Categoría')+' ';const btn=document.createElement('button');btn.className='secondary';btn.textContent='Quitar permiso';btn.onclick=()=>{if(confirm('¿Quitar este permiso al maestro?'))busy(async()=>{await api('revoke',{id:a.id,operation:uid()});await refresh();status('Permiso retirado.');});};row.append(btn);list.append(row);});
 }
-async function refresh(){const d=await api('list');if(d.version!==4)throw new Error('Publica la nueva versión de Code.gs y ejecuta actualizarEstructura para usar grupos y categorías.');account=d.user;teachers=d.teachers;students=d.students;groups=d.groups;categories=d.categories;assignments=d.assignments;show('teacher');render();}
+async function refresh(){const d=await api('list');if(d.version!==5)throw new Error('Publica la nueva versión de Code.gs y ejecuta actualizarEstructura para usar grupos y categorías.');account=d.user;teachers=d.teachers;students=d.students;groups=d.groups;categories=d.categories;assignments=d.assignments;show('teacher');render();}
 async function openCard(s){$('cardName').textContent=s.name;$('cardClass').textContent=groupLabel(s);$('studentLink').value=linkFor(s.code);await QRCode.toCanvas($('cardQR'),linkFor(s.code),{width:280,margin:2});$('cardDialog').showModal();}
 function prepareAward(s){
  const cat=$('pointCategory').value;if(!cat||s.groupId!==activeGroup){status('Selecciona el grupo del alumno y una categoría autorizada.',true);return false;}
@@ -114,3 +114,22 @@ if(!/^https:\/\/script\.google\.com\/macros\/s\/[^/]+\/exec$/.test(apiURL))show(
 else if(code){status('Cargando tus puntos…');busy(refreshStudent);}
 else if(session){status('Cargando tu clase…');busy(async()=>{await refresh();status('');});}
 else show('login');
+
+$('resetTeacher').onclick=()=>{
+ if(account?.role!=='coordinator')return;
+ if(!teachers.length){status('Agrega un maestro antes de restablecer una contraseña.',true);return;}
+ fillSelect('resetTeacherId',teachers.map(t=>({id:t.id,name:t.name+' · '+t.username})),selectedTeacherId);
+ $('resetError').textContent='';$('resetPassword').value='';$('resetConfirm').value='';$('resetDialog').showModal();
+};
+$('cancelReset').onclick=()=>$('resetDialog').close();
+$('resetDialog').addEventListener('close',()=>{$('resetPassword').value='';$('resetConfirm').value='';$('resetError').textContent='';});
+$('resetForm').onsubmit=e=>{e.preventDefault();busy(async()=>{
+ try{
+  if(account?.role!=='coordinator')throw new Error('Solo Coordinación puede restablecer contraseñas.');
+  const password=$('resetPassword').value;
+  if(password!==$('resetConfirm').value)throw new Error('Las contraseñas no coinciden.');
+  if(password.length<16||password.length>200)throw new Error('Usa una contraseña de 16 a 200 caracteres.');
+  const result=await api('resetTeacherPassword',{teacherId:$('resetTeacherId').value,password,operation:uid()});
+  $('resetDialog').close();status('Contraseña guardada para '+result.name+' (usuario: '+result.username+').');
+ }catch(e){$('resetError').textContent=e.message;throw e;}
+});};
